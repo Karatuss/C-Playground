@@ -9,7 +9,7 @@ C_OBJS = $(patsubst build/%.o, $(C_SRCS))
 
 CFLAGS = -I $(INCLUDE_DIR) \
 				 -g \
-				 -lpthread
+				 -pthread
 
 PORT = 8888
 result = build/server
