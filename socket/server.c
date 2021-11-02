@@ -1,111 +1,266 @@
 #include <stdio.h>
-#include <stdlib.h>       // exit
-#include <string.h>       // strcpy
-#include <unistd.h>       // socklen_t, write, read
-#include <pthread.h>      // threading
-#include <sys/socket.h>
-#include <arpa/inet.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <memory.h>
+#include "server.h"
 
-#include "my_socket.h"
+static pthread_t wthread[THREAD_SIZE];
+static pthread_t rthread[THREAD_SIZE];
 
-// #define TEST
-#define CLIENT_MAX 3
-
-int cnt_connection_hit;
-
-int main(int argc, char *argv[])
+static void *reader(void *param)
 {
-  int server_desc;
-  int client_desc;
-  socklen_t client_addr_size;
-  int *new_socket;
+  struct server_param *sparm = (struct server_param*)param;
+  struct sock_server *s = sparm->server;
 
-  struct sockaddr_in server;
-  struct sockaddr_in client;
-  char *message, server_reply[2000];
-
-  char *hostname = "www.google.com";
-  char ip[100];
-  struct hostent *he;
-  struct in_addr **addr_list;
-
-  int option = 1;   // for setsockopt - make SO_REUSEADDR 1
-
-  if (argc != 2)
-    error_handling("plz specify the opened port number");
-
-  // Create socket
-  server_desc = socket(AF_INET, SOCK_STREAM, 0);
-  if (server_desc == -1)
-    error_handling("Could not create socket");
+  sem_t *resource = s->resource,
+        *rmutex   = s->rmutex,
+        *service_queue = s->service_queue;
   
-  memset(&server, 0, sizeof(server));
-  server.sin_family = AF_INET;
-  server.sin_addr.s_addr = INADDR_ANY;
-  server.sin_port = htons(atoi(argv[1]));
-  setsockopt(server_desc, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option)); // this is for disable socket binding time-wait state.
+  // ENTRY SECTION
+  sem_wait(service_queue);
+  sem_wait(rmutex);
 
-  // Bind 
-  if (bind(server_desc, (struct sockaddr*)&server, sizeof(server)) < 0)
-    error_handling("bind failed");
-  puts("bind done");
+  s->readcount++;
+  if (s->readcount == 1)  // if I'm the first reader,
+    sem_wait(resource);   // request resource access for readers (writers blocked)
 
-  // Listen
-  if (listen(server_desc, CLIENT_MAX) < 0) 
-    error_handling("listen failed");
-
-  // If client asks to connect, accept it.
-  client_addr_size = sizeof(client);
-  while ((client_desc = accept(server_desc, (struct sockaddr *)&client, (socklen_t *)&client_addr_size))) {
-    puts("Connection accepted");
-
-    // Reply to the client
-    // unless we make this while context, the connection between
-    // server and client would be disconnected immediatly.
-    message = "Welcome to my little socket server!\n";
-    write(client_desc, message, strlen(message));
-
-    pthread_t sniffer_thread;
-    new_socket = (int *)malloc(sizeof(int));
-    *new_socket = client_desc;
-
-    if (pthread_create(&sniffer_thread, NULL, connection_handler, (void *)new_socket) < 0)
-      error_handling("could not create thread");
-  }
-  if (client_desc < 0) 
-    error_handling("accept error");
-
-
-
-#ifdef TEST
-  // Get IP address from hostname
-  get_ipaddr_from_dns(&he, hostname);  // if the allocation is failed, program is terminated.
-  addr_list = (struct in_addr **)he->h_addr_list;
-
-  for (int i = 0; addr_list[i]; i++)
-    strcpy(ip, inet_ntoa(*addr_list[i]));
-  printf("%s resolved to : %s\n", hostname, ip);
+  sem_post(service_queue);
+  sem_post(rmutex);
   
-  // Connect to remote server
-  if (connect(server_desc, (struct sockaddr *)&server, sizeof(server)) < 0) {
-    puts("connect error");
-    return 1;
-  } 
+  // CRITICAL SECTION
+  printf("%d Reader is inside\n", s->readcount);
+  printf("----------------------------\n");
+  printf("Total server hit\t[%d]\n", ++(s->server_hit));
+  printf("Shared Data value\t[%d]\n", s->shared_data);
+  
+  sleep(5);
 
-  puts("Connected\n");
+  // EXIT SECTION
+  sem_wait(rmutex);
+  s->readcount--;
+  if (s->readcount == 0)  // the very last reader must release the resource lock.
+    sem_post(resource);
+  sem_post(rmutex);
 
-  // Send data
-  message = "GET / HTTP/1.1\r\n\r\n";
-  if (send(server_desc, message, strlen(message), 0) < 0) {
-    puts("Send failed");
-    return 1;
-  }
-  puts("Data Send\n");
+  printf("----------------------------\n");
+  printf("%d Reader is leaving...\n", s->readcount + 1);
+  pthread_exit(NULL);
+}
 
-  // Receive a reply from the server
-  if (recv(server_desc, server_reply, 2000, 0) < 0)
-    puts("recv failed");
-  puts("Reply received\n");
-  puts(server_reply);
-#endif  /* end of TEST */
+static void *writer(void *param)
+{
+  struct server_param *sparm = (struct server_param*)param;
+  struct sock_server *s = sparm->server;
+
+  sem_t *resource = s->resource,
+        *service_queue = s->service_queue;
+  
+  // ENTRY SECTION
+  sem_wait(service_queue);
+  sem_wait(resource);   // request resource access for readers (writers blocked)
+  sem_post(service_queue);
+  
+  // CRITICAL SECTION
+  printf("Writer is inside\n");
+  printf("----------------------------\n");
+  printf("Total server hit\t[%d]\n", ++(s->server_hit));
+  s->shared_data = sparm->value;
+  printf("Changed Shared Data value\t[%d]\n", s->shared_data);
+  
+  // EXIT SECTION
+  sem_post(resource);
+
+  printf("----------------------------\n");
+  printf("Writer is leaving...\n");
+  pthread_exit(NULL);
+}
+
+void init_server(struct sock_server *server, int domain, int type, int protocol, int port)
+{
+  int socket_fd;
+  struct sockaddr_in *s = NULL;
+
+  // double pointer is tooooooooooooooo hard to handle delicately and intuitively.
+  // server = (struct sock_server *)malloc(sizeof(struct sock_server));
+  if (!server)
+    error_handling(1, "server instance generation failed");
+  memset(server, 0, sizeof(struct sock_server));
+  server->socket_fd = socket(domain, type, protocol);
+  if (server->socket_fd == -1)
+    error_handling(1, "server socket number create failed");
+
+  s = &server->addr;
+  socket_fd = server->socket_fd;
+
+  int opt_val = true;
+
+  s->sin_family = domain;
+  s->sin_addr.s_addr = htonl(INADDR_ANY);
+  s->sin_port = htons(port);
+  setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &opt_val, sizeof(opt_val)); // disable socket bind time-wait
+
+  // initalize shared data count
+  server->readcount = 0;
+  server->server_hit = 0;
+  server->shared_data = 0;
+
+  // initialize semaphore
+  server->resource = sem_open("/resource", O_CREAT | O_EXCL, 0644, 1);
+  server->rmutex = sem_open("/rmutex", O_CREAT | O_EXCL, 0644, 1);
+  server->service_queue = sem_open("/service_queue", O_CREAT | O_EXCL, 0644, 1);
+  sem_unlink("/resource");
+  sem_unlink("/rmutex");
+  sem_unlink("/service_queue");
+
+  if (server->resource == SEM_FAILED)
+    printf("sem_open(\"resource\") failed. errno:%d\n", errno);
+  if (server->resource == SEM_FAILED)
+    printf("sem_open(\"rmutex\") failed. errno:%d\n", errno);
+  if (server->resource == SEM_FAILED)
+    printf("sem_open(\"service_queue\") failed. errno:%d\n", errno);
+
+  // Bind the socket to
+  // the address and port number
+  bind(socket_fd, (struct sockaddr*)s, sizeof(*s));
+
+  // Listen on the socket
+  // with MAX_CLIENT connection
+  // requests queued
+  if (MAX_CLIENT <= 0 || MAX_CLIENT > 100)
+    error_handling(socket_fd, "too many MAX_CLIENT!(over 100)");
+  if (listen(socket_fd, MAX_CLIENT) == 0)
+    printf("Listening\n");
+  else
+    error_handling(socket_fd, "connection queue is full!");
+}
+
+void exit_server(struct sock_server *server)
+{
+  // initialize shared data count
+  server->readcount = 0;
+  server->server_hit = 0;
+  server->shared_data = 0;
+
+  // free the sock_server instance
+  free(server);
+}
+
+/* error_handling(int socket_fd, char *error)
+ * 
+ * push message to server, and client threads
+ * with formatted error string.
+ */
+void error_handling(int socket_fd, char *error)
+{
+  char msg[100] = {0};
+  
+  sprintf(msg, "[Error]Server to %d: %s\n", socket_fd, error);
+  printf("%s", msg);
+  send(socket_fd, msg, strlen(msg), 0);
+
+  exit(-1);
+}
+
+/* int start(struct sock_server *server)
+ *
+ * main function for server.c
+ */
+int start(struct sock_server *server)
+{
+  int domain, type, protocol, port;
+  int new_socket;
+  socklen_t addr_size;
+
+  // TODO: menu() function create for server init
+  domain = AF_INET;     // ipv4
+  type = SOCK_STREAM;   // TCP
+  protocol = 0;
+  port = 8888;
+  init_server(server, domain, type, protocol, port);  
+
+  struct sockaddr_in s_storage;
+  int idx = 0;
+
+  do {
+    addr_size = sizeof(s_storage);
+
+    // Extract the first connection
+    // in the queue
+    new_socket = accept(server->socket_fd,
+                        (struct sockaddr*)&s_storage,
+                        &addr_size);
+
+    int try = 0;
+    int choice = 0;
+    struct server_param sparm = {
+      .server = server,
+      .value  = 0
+    };
+    recv(new_socket, &choice, sizeof(char), 0);
+
+    // in fact, input value check routine exists on client-side
+    // but we need to maintain the integrity of
+    // user input on server-sid too.
+    choice -= '0';
+    printf("user input: %d\n", choice);
+    if (choice <= 0 || choice > 2)
+      error_handling(server->socket_fd, "user input check failed");
+
+    // READ
+    if (choice == 1) {  
+redo_reader:
+      if (pthread_create(&rthread[idx++], NULL,
+                         reader, &sparm)
+          != 0) {
+          printf("[[Creation Error]] Failed to create reader thread\n");
+          if (try++ < MAX_TRY_THREAD_CREATE)
+            goto redo_reader;
+          else if (try == MAX_TRY_THREAD_CREATE)
+            error_handling(new_socket, "Something gonna wrong. Plz restart the server!!");
+      }
+
+      try = 0;  // init to 0 for later
+    } else if (choice == 2) { // WRITE
+      // receive a value from a client
+      recv(new_socket, &sparm.value, sizeof(sparm.value), 0);
+redo_writer:
+      if (pthread_create(&wthread[idx++], NULL,
+                         writer, &sparm)
+          != 0) {
+          printf("[[Creation Error]] Failed to create writer thread\n");
+          if (try++ < MAX_TRY_THREAD_CREATE)
+            goto redo_writer;
+          else if (try == MAX_TRY_THREAD_CREATE)
+            error_handling(new_socket, "Something gonna wrong. Plz restart the server!!");
+      }
+
+      try = 0;  // init to 0 for later
+    }
+
+    // Keep the number of threads
+    if (idx >= 50) {
+      idx = 0;
+
+      while (idx < 50) {
+        // Suspend execution of
+        // the calling thread
+        // until the target thread
+        // teminates
+        pthread_join(wthread[idx++], NULL);
+        pthread_join(rthread[idx++], NULL);
+      }
+
+      idx = 0;
+    }
+  } while(1);
+
+  exit_server(server);
+
+  return 0;
+}
+
+int main()
+{
+  struct sock_server *server = (struct sock_server*)malloc(sizeof(struct sock_server));
+  start(server);
 }
