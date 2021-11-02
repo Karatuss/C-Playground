@@ -12,3 +12,7 @@ There are three ways to solve the Readers-Writers Problem, so I selected one of 
 
 It is prihibited to access **directly** with calling functions from outside of launcher.
 Please aware about this information.
+
+# Reference
+1. Readers-Writes Problem
+   - https://en.wikipedia.org/wiki/Readers–writers_problem
