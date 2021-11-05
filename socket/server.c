@@ -143,6 +143,7 @@ void exit_server(struct sock_server *server)
 
   // free the sock_server instance
   free(server);
+  server = NULL;
 }
 
 /* error_handling(int socket_fd, char *error)
@@ -191,18 +192,20 @@ int start(struct sock_server *server)
                         &addr_size);
 
     int try = 0;
+    char c;
     int choice = 0;
+
     struct server_param sparm = {
       .server = server,
       .value  = 0
     };
-    recv(new_socket, &choice, sizeof(char), 0);
+    recv(new_socket, &c, sizeof(char), 0); ///////// test: sizeof(choice) -> sizeof(char)
 
     // in fact, input value check routine exists on client-side
     // but we need to maintain the integrity of
     // user input on server-sid too.
-    choice -= '0';
-    printf("user input: %d\n", choice);
+    choice = c;
+    printf("user input: %d\n", choice + '0'); //////////////////////test
     if (choice <= 0 || choice > 2)
       error_handling(server->socket_fd, "user input check failed");
 
@@ -233,8 +236,6 @@ redo_writer:
           else if (try == MAX_TRY_THREAD_CREATE)
             error_handling(new_socket, "Something gonna wrong. Plz restart the server!!");
       }
-
-      try = 0;  // init to 0 for later
     }
 
     // Keep the number of threads
@@ -252,15 +253,12 @@ redo_writer:
 
       idx = 0;
     }
+
+    // TODO: add jiffies for break condition
+
   } while(1);
 
   exit_server(server);
 
   return 0;
-}
-
-int main()
-{
-  struct sock_server *server = (struct sock_server*)malloc(sizeof(struct sock_server));
-  start(server);
 }
