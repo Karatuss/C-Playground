@@ -28,8 +28,8 @@ static void *reader(void *param)
   sem_post(rmutex);
   
   // CRITICAL SECTION
-  printf("%d Reader is inside\n", s->readcount);
   printf("----------------------------\n");
+  printf("%d Reader is inside\n", s->readcount);
   printf("Total server hit\t[%d]\n", ++(s->server_hit));
   printf("Shared Data value\t[%d]\n", s->shared_data);
   
@@ -43,7 +43,7 @@ static void *reader(void *param)
   sem_post(rmutex);
 
   printf("----------------------------\n");
-  printf("%d Reader is leaving...\n", s->readcount + 1);
+  printf("%d Reader is leaving...\n\n", s->readcount + 1);
   pthread_exit(NULL);
 }
 
@@ -61,8 +61,8 @@ static void *writer(void *param)
   sem_post(service_queue);
   
   // CRITICAL SECTION
-  printf("Writer is inside\n");
   printf("----------------------------\n");
+  printf("Writer is inside\n");
   printf("Total server hit\t[%d]\n", ++(s->server_hit));
   s->shared_data = sparm->value;
   printf("Changed Shared Data value\t[%d]\n", s->shared_data);
@@ -71,7 +71,7 @@ static void *writer(void *param)
   sem_post(resource);
 
   printf("----------------------------\n");
-  printf("Writer is leaving...\n");
+  printf("Writer is leaving...\n\n");
   pthread_exit(NULL);
 }
 
@@ -192,20 +192,21 @@ int start(struct sock_server *server)
                         &addr_size);
 
     int try = 0;
-    char c;
     int choice = 0;
 
     struct server_param sparm = {
       .server = server,
       .value  = 0
     };
-    recv(new_socket, &c, sizeof(char), 0); ///////// test: sizeof(choice) -> sizeof(char)
+    // receive values from a client
+    recv(new_socket, &choice, sizeof(choice), 0); 
+    recv(new_socket, &sparm.value, sizeof(sparm.value), 0);
 
-    // in fact, input value check routine exists on client-side
+    // In fact, input value check routine exists on client-side
     // but we need to maintain the integrity of
     // user input on server-sid too.
-    choice = c;
-    printf("user input: %d\n", choice + '0'); //////////////////////test
+    //
+    // printf("user input: %d\n", choice); //////////////////////test
     if (choice <= 0 || choice > 2)
       error_handling(server->socket_fd, "user input check failed");
 
@@ -224,8 +225,6 @@ redo_reader:
 
       try = 0;  // init to 0 for later
     } else if (choice == 2) { // WRITE
-      // receive a value from a client
-      recv(new_socket, &sparm.value, sizeof(sparm.value), 0);
 redo_writer:
       if (pthread_create(&wthread[idx++], NULL,
                          writer, &sparm)

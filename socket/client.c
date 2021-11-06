@@ -18,10 +18,8 @@ void *client_handler(void *param)
   int socket_fd = cp->socket_fd;
 
   send(socket_fd, &cp->menu, sizeof(cp->menu), 0);
-  if (cp->menu == '\x02')
-    send(socket_fd, &cp->input, sizeof(cp->input), 0);
+  send(socket_fd, &cp->input, sizeof(cp->input), 0);
 
-  // free(cp);
   pthread_exit(NULL);
 
   return 0;
@@ -64,27 +62,31 @@ int main()
 
   int random_fd;
 
+  int menu = 0;  // 0. EXIT  1. READ  2. WRITE
+  int client_request = 0;
+
   // Initializing process
-  init_client(&socket_fd, &sock_client);
   _test_init_random_input(&random_fd);
 
   do {
-    char menu;  // 0. EXIT  1. READ  2. WRITE
-    int client_request = 0;
+    init_client(&socket_fd, &sock_client);
 
-    // TEST macro is generated at 'launcher.{h,c}'
 #ifdef TEST
     read(random_fd, &menu, sizeof(menu));
+    if (menu < 0)
+      menu = -menu;
     menu = (menu % 2) + 1;
 
-    read(random_fd, &client_request, sizeof(client_request));
+    if (menu == 2)
+      read(random_fd, &client_request, sizeof(client_request));
+
+    printf("[INFO] menu: %d, input: %d\n", menu, client_request);
 #else
     // Clear input buffer
     int c;
     while ((c = getchar()) != '\n' && c != EOF);
     
-    scanf("%c", &menu);
-    menu -= '0';
+    scanf("%d", &menu);
 
     if (menu < 0 || menu > 2) {
       printf("[-] Invalid menu input\n");
@@ -100,29 +102,21 @@ int main()
     }
 #endif /* TEST */
 
-    struct client_param *cparam = (struct client_param*)malloc(sizeof(struct client_param));
-    if (!cparam) {
-      printf("[-]client_param: malloc failed\n");
-      exit(-1);
-    }
-    cparam->socket_fd = socket_fd;
-    cparam->menu = menu;
-    cparam->input = client_request;
-    
+    struct client_param cparam = {
+      .socket_fd = socket_fd,
+      .menu = menu,
+      .input = client_request
+    };
+
     // Create thread
     // cparam: freed inside the pthread for integrity.
-    pthread_create(&tid, NULL, client_handler, cparam);
+    pthread_create(&tid, NULL, client_handler, &cparam);
 
     sleep(5);
 
-    if (cparam)
-      free(cparam);
-    cparam = NULL;
-
-    pthread_join(tid, NULL);
-  } while(1);
-
   close(socket_fd);
+    // pthread_join(tid, NULL);
+  } while(1);
 
   return 0;
 }

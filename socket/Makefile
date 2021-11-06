@@ -4,8 +4,7 @@ VPATH = ..
 
 INCLUDE_DIR = $(PWD) 
 
-EXCLUDE_FILE = my_socket.h my_socket.c old_launcher.c	\
-							 client.h client.c
+EXCLUDE_FILE = client.h client.c
 
 C_SRCS := $(notdir $(wildcard *.c))
 C_SRCS := $(filter-out $(EXCLUDE_FILE), $(C_SRCS))

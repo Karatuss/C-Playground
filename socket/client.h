@@ -11,7 +11,7 @@
 
 struct client_param {
   int socket_fd;
-  char menu;    // 0x01 ~ 0x02
+  int menu;    // 0x01 ~ 0x02
   int input;
 };
 

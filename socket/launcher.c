@@ -20,20 +20,6 @@ int main()
 
   print_start_launcher();
   start(server);  // start server
-  /*
-  if (access("client", F_OK) != 0) {
-    printf("[-]launcher: client exec file doesn't exist.\n");
-    exit(-1);
-  }
 
-  int clients = 0;
-  printf("How many client do u want to make?\n");
-  printf("> ");
-  scanf("%d", &clients);
-
-  do {
-  system("build/client");
-  } while(clients--);
-  */
   return 0;
 }
